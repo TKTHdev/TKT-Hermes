@@ -58,39 +58,122 @@ func (h *HermesNode) handleMessage(data []byte, from *net.UDPAddr) {
 }
 
 // handleWrite is called on the coordinator for a key when a client issues a write.
-// TODO: implement Hermes write protocol
 //  1. Mark key as StateTrans
-//  2. Broadcast INV to all peers
-//  3. On receiving all ACKs, broadcast VAL and reply to client
+//  2. Broadcast INV to all peers; store pendingWrite for ACK counting
+//  3. On receiving all ACKs (handleACK), broadcast VAL and reply to client
 func (h *HermesNode) handleWrite(msg *Message, from *net.UDPAddr) {
-	h.log("WRITE key=%s seq=%d (TODO)", msg.Key, msg.Seq)
+	h.log("WRITE key=%s seq=%d", msg.Key, msg.Seq)
+
+	h.mu.Lock()
+	h.kstate[msg.Key] = StateTrans
+	h.mu.Unlock()
+
+	// Collect peers excluding self.
+	peers := make([]int, 0, len(h.peers)-1)
+	for id := range h.peers {
+		if id != h.me {
+			peers = append(peers, id)
+		}
+	}
+
+	// Single-node cluster: commit immediately without INV/ACK round-trip.
+	if len(peers) == 0 {
+		h.mu.Lock()
+		h.store[msg.Key] = msg.Value
+		h.kstate[msg.Key] = StateValid
+		h.mu.Unlock()
+		h.readCond.Broadcast()
+		resp := &Message{Type: MsgTypeResponse, Seq: msg.Seq, Key: msg.Key}
+		h.sendToAddr(from, resp.Encode())
+		return
+	}
+
+	h.writeMu.Lock()
+	h.pendingWrite[msg.Key] = &writeRecord{
+		value:      msg.Value,
+		acksNeeded: len(peers),
+		clientAddr: from.String(),
+		seq:        msg.Seq,
+	}
+	h.writeMu.Unlock()
+
+	inv := &Message{Type: MsgTypeINV, Seq: msg.Seq, Key: msg.Key, Value: msg.Value}
+	data := inv.Encode()
+	for _, id := range peers {
+		h.sendTo(id, data)
+	}
 }
 
 // handleINV is called on non-coordinator nodes when they receive an invalidation.
-// TODO: implement Hermes INV handling
-//  1. Mark key as StateInvalid, store pending value
+//  1. Mark key as StateInvalid
 //  2. Reply with ACK to coordinator
 func (h *HermesNode) handleINV(msg *Message, from *net.UDPAddr) {
-	h.log("INV key=%s seq=%d (TODO)", msg.Key, msg.Seq)
+	h.log("INV key=%s seq=%d", msg.Key, msg.Seq)
+
+	h.mu.Lock()
+	h.kstate[msg.Key] = StateInvalid
+	h.mu.Unlock()
+
+	ack := &Message{Type: MsgTypeACK, Seq: msg.Seq, Key: msg.Key}
+	h.sendToAddr(from, ack.Encode())
 }
 
 // handleACK is called on the coordinator when a peer acknowledges an INV.
-// TODO: implement Hermes ACK handling
-//  1. Count ACKs; when all peers have acked, broadcast VAL
+//  1. Count ACKs; when all peers have acked, broadcast VAL and reply to client
 func (h *HermesNode) handleACK(msg *Message, from *net.UDPAddr) {
-	h.log("ACK key=%s seq=%d (TODO)", msg.Key, msg.Seq)
+	h.log("ACK key=%s seq=%d", msg.Key, msg.Seq)
+
+	h.writeMu.Lock()
+	rec := h.pendingWrite[msg.Key]
+	if rec == nil {
+		h.writeMu.Unlock()
+		return
+	}
+	rec.acksNeeded--
+	done := rec.acksNeeded == 0
+	h.writeMu.Unlock()
+
+	if !done {
+		return
+	}
+
+	// All ACKs received: broadcast VAL to peers.
+	val := &Message{Type: MsgTypeVAL, Seq: rec.seq, Key: msg.Key, Value: rec.value}
+	data := val.Encode()
+	for id := range h.peers {
+		if id != h.me {
+			h.sendTo(id, data)
+		}
+	}
+
+	// Apply locally and reply to client.
+	h.mu.Lock()
+	h.store[msg.Key] = rec.value
+	h.kstate[msg.Key] = StateValid
+	h.mu.Unlock()
+	h.readCond.Broadcast()
+
+	h.writeMu.Lock()
+	delete(h.pendingWrite, msg.Key)
+	h.writeMu.Unlock()
+
+	clientAddr, _ := net.ResolveUDPAddr("udp", rec.clientAddr)
+	resp := &Message{Type: MsgTypeResponse, Seq: rec.seq, Key: msg.Key}
+	h.sendToAddr(clientAddr, resp.Encode())
 }
 
 // handleVAL is called on non-coordinator nodes when the coordinator commits a write.
-// TODO: implement Hermes VAL handling
-//  1. Apply value to store, mark key as StateValid
+//  1. Apply value to store, mark key as StateValid, wake stalled readers
 func (h *HermesNode) handleVAL(msg *Message, from *net.UDPAddr) {
-	h.log("VAL key=%s seq=%d (TODO)", msg.Key, msg.Seq)
+	h.log("VAL key=%s seq=%d", msg.Key, msg.Seq)
+
+	h.mu.Lock()
+	h.store[msg.Key] = msg.Value
+	h.kstate[msg.Key] = StateValid
+	h.mu.Unlock()
+	h.readCond.Broadcast()
 }
 
-// handleRead is called on any node when a client issues a read.
-//  1. If key is StateValid, reply immediately.
-//  2. If key is StateInvalid/StateTrans, stall until VAL arrives.
 func (h *HermesNode) handleRead(msg *Message, from *net.UDPAddr) {
 	h.mu.Lock()
 	for h.kstate[msg.Key] != StateValid {
