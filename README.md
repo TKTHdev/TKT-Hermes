@@ -107,6 +107,10 @@ Results are written as CSV to `results/benchmark_<timestamp>_<type>.csv`.
 | ycsb-b   | 5%          |
 | ycsb-c   | 0% (read-only) |
 
+## Experiment plot
+
+![Throughput vs Latency (averaged over samples)](results/experiment_20260222_150438.png)
+
 ## Testing
 
 ```sh
