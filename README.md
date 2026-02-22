@@ -114,7 +114,7 @@ Results are written as CSV to `results/benchmark_<timestamp>_<type>.csv`.
 
 ## Experiment plot
 
-![Throughput vs Latency (averaged over samples)](results/experiment_20260222_150438.png)
+![Throughput vs Latency (averaged over samples)](results/image.png)
 
 ## Testing
 

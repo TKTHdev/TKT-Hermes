@@ -114,7 +114,7 @@ make benchmark TYPE=ycsb-b WORKERS="1 2 4 8" KEYS="6 100"
 
 ## 実験プロット
 
-![Throughput vs Latency（サンプル平均）](results/experiment_20260222_150438.png)
+![Throughput vs Latency（サンプル平均）](results/image.png)
 
 ## テスト
 
