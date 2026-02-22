@@ -107,6 +107,11 @@ Results are written as CSV to `results/benchmark_<timestamp>_<type>.csv`.
 | ycsb-b   | 5%          |
 | ycsb-c   | 0% (read-only) |
 
+## Experiment environment
+
+- The current benchmark results and plots were collected on a single machine.
+- This is **not** a distributed deployment (no multi-host network environment).
+
 ## Experiment plot
 
 ![Throughput vs Latency (averaged over samples)](results/experiment_20260222_150438.png)
