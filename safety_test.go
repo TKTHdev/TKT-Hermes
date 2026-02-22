@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -32,6 +33,7 @@ func startNode(t *testing.T, id int, peers map[int]string, conn *net.UDPConn) *H
 		peers:        peers,
 		store:        make(map[string]string),
 		kstate:       make(map[string]KeyState),
+		kseq:         make(map[string]uint64),
 		pendingWrite: make(map[string]*writeRecord),
 	}
 	h.readCond = sync.NewCond(&h.mu)
@@ -327,4 +329,146 @@ func TestMonotonicWritesAcrossNodes(t *testing.T) {
 			}
 		}
 	}
+}
+
+// TestConcurrentWritesDifferentKeys fires parallel writes to distinct keys and
+// verifies that each committed value is visible on every node. This tests that
+// the protocol correctly handles concurrent operations on independent keys.
+func TestConcurrentWritesDifferentKeys(t *testing.T) {
+	t.Parallel()
+
+	conn0, conn1, conn2 := udpListen(t), udpListen(t), udpListen(t)
+	peers := map[int]string{
+		0: conn0.LocalAddr().String(),
+		1: conn1.LocalAddr().String(),
+		2: conn2.LocalAddr().String(),
+	}
+	startNode(t, 0, peers, conn0)
+	startNode(t, 1, peers, conn1)
+	startNode(t, 2, peers, conn2)
+
+	node0Addr := mustResolve(t, peers[0])
+	allAddrs := []*net.UDPAddr{
+		mustResolve(t, peers[0]),
+		mustResolve(t, peers[1]),
+		mustResolve(t, peers[2]),
+	}
+
+	const numKeys = 8
+	// Track which writes timed out.
+	timedOut := make([]int32, numKeys)
+
+	var wg sync.WaitGroup
+	for i := 0; i < numKeys; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			// Each goroutine owns its own client so seq numbers don't collide.
+			tc := newTestClient(t)
+			key := fmt.Sprintf("pk%d", i)
+			val := fmt.Sprintf("pv%d", i)
+			resp := tc.send(node0Addr, &Message{Type: MsgTypeWrite, Key: key, Value: val}, 2*time.Second)
+			if resp == nil {
+				atomic.StoreInt32(&timedOut[i], 1)
+				t.Errorf("write key=%s timed out", key)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	// For each successfully acked write, verify all nodes return the correct value.
+	tc := newTestClient(t)
+	for i := 0; i < numKeys; i++ {
+		if atomic.LoadInt32(&timedOut[i]) != 0 {
+			continue
+		}
+		key := fmt.Sprintf("pk%d", i)
+		want := fmt.Sprintf("pv%d", i)
+		for j, addr := range allAddrs {
+			r := tc.send(addr, &Message{Type: MsgTypeRead, Key: key}, 2*time.Second)
+			if r == nil {
+				t.Errorf("read key=%s from node%d timed out", key, j)
+				continue
+			}
+			if r.Value != want {
+				t.Errorf("safety violation: key=%s node%d returned %q, want %q",
+					key, j, r.Value, want)
+			}
+		}
+	}
+}
+
+// TestConcurrentWritesSameKey fires parallel writes to a single key and
+// verifies the agreement property: after all activity settles, every node in
+// the cluster returns the same value (no split-brain). Some writers may not
+// receive an ack when their pendingWrite record is displaced by a concurrent
+// write, but the cluster must always converge to one consistent value.
+func TestConcurrentWritesSameKey(t *testing.T) {
+	t.Parallel()
+
+	conn0, conn1, conn2 := udpListen(t), udpListen(t), udpListen(t)
+	peers := map[int]string{
+		0: conn0.LocalAddr().String(),
+		1: conn1.LocalAddr().String(),
+		2: conn2.LocalAddr().String(),
+	}
+	startNode(t, 0, peers, conn0)
+	startNode(t, 1, peers, conn1)
+	startNode(t, 2, peers, conn2)
+
+	node0Addr := mustResolve(t, peers[0])
+	allAddrs := []*net.UDPAddr{
+		mustResolve(t, peers[0]),
+		mustResolve(t, peers[1]),
+		mustResolve(t, peers[2]),
+	}
+
+	const numWriters = 5
+	writtenValues := make([]string, numWriters)
+	for i := range writtenValues {
+		writtenValues[i] = fmt.Sprintf("writer%d", i)
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < numWriters; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			tc := newTestClient(t)
+			// Ignore ack timeout: concurrent same-key writes may not all be
+			// individually acknowledged (the "winner" is whichever write's
+			// pendingWrite record survives the race). The invariant we test is
+			// agreement across nodes, not that every write is acked.
+			tc.send(node0Addr, &Message{Type: MsgTypeWrite, Key: "shared", Value: writtenValues[i]}, 2*time.Second)
+		}(i)
+	}
+	wg.Wait()
+
+	// After all goroutines finish, read from every node.
+	// Reads may briefly stall if a VAL is still propagating — that is fine.
+	tc := newTestClient(t)
+	agreed := make([]string, len(allAddrs))
+	for j, addr := range allAddrs {
+		r := tc.send(addr, &Message{Type: MsgTypeRead, Key: "shared"}, 2*time.Second)
+		if r == nil {
+			t.Fatalf("read from node%d timed out after concurrent writes", j)
+		}
+		agreed[j] = r.Value
+	}
+
+	// Agreement: all nodes must return the same value (no split-brain).
+	for j := 1; j < len(agreed); j++ {
+		if agreed[j] != agreed[0] {
+			t.Fatalf("agreement violation: node0=%q node%d=%q — split-brain detected",
+				agreed[0], j, agreed[j])
+		}
+	}
+
+	// Validity: the agreed value must be one of the values that was written.
+	for _, v := range writtenValues {
+		if agreed[0] == v {
+			return
+		}
+	}
+	t.Fatalf("validity violation: agreed value %q was not written by any writer", agreed[0])
 }

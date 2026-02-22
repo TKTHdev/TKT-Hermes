@@ -105,12 +105,18 @@ func (h *HermesNode) handleWrite(msg *Message, from *net.UDPAddr) {
 }
 
 // handleINV is called on non-coordinator nodes when they receive an invalidation.
-//  1. Mark key as StateInvalid
-//  2. Reply with ACK to coordinator
+//  1. If a newer write has already committed (kseq >= msg.Seq), drop the stale INV.
+//  2. Otherwise mark key as StateInvalid and reply with ACK to coordinator.
 func (h *HermesNode) handleINV(msg *Message, from *net.UDPAddr) {
 	h.log("INV key=%s seq=%d", msg.Key, msg.Seq)
 
 	h.mu.Lock()
+	if msg.Seq <= h.kseq[msg.Key] {
+		// Stale INV from a superseded write: a later VAL has already committed.
+		// Accepting it would leave the key permanently stuck in StateInvalid.
+		h.mu.Unlock()
+		return
+	}
 	h.kstate[msg.Key] = StateInvalid
 	h.mu.Unlock()
 
@@ -125,7 +131,9 @@ func (h *HermesNode) handleACK(msg *Message, from *net.UDPAddr) {
 
 	h.writeMu.Lock()
 	rec := h.pendingWrite[msg.Key]
-	if rec == nil {
+	if rec == nil || rec.seq != msg.Seq {
+		// ACK from a superseded write (pendingWrite was overwritten by a later
+		// write, or already completed). Ignore to avoid double-counting.
 		h.writeMu.Unlock()
 		return
 	}
@@ -150,6 +158,7 @@ func (h *HermesNode) handleACK(msg *Message, from *net.UDPAddr) {
 	h.mu.Lock()
 	h.store[msg.Key] = rec.value
 	h.kstate[msg.Key] = StateValid
+	h.kseq[msg.Key] = rec.seq
 	h.mu.Unlock()
 	h.readCond.Broadcast()
 
@@ -170,6 +179,7 @@ func (h *HermesNode) handleVAL(msg *Message, from *net.UDPAddr) {
 	h.mu.Lock()
 	h.store[msg.Key] = msg.Value
 	h.kstate[msg.Key] = StateValid
+	h.kseq[msg.Key] = msg.Seq
 	h.mu.Unlock()
 	h.readCond.Broadcast()
 }

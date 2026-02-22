@@ -34,6 +34,7 @@ type HermesNode struct {
 	readCond *sync.Cond
 	store    map[string]string
 	kstate   map[string]KeyState // per-key protocol state (default: StateValid)
+	kseq     map[string]uint64   // highest seq for which this node received a VAL
 
 	// In-flight writes on the coordinator: key -> pending write
 	writeMu      sync.Mutex
@@ -50,6 +51,7 @@ func NewHermesNode(id int, confPath string, debug bool) *HermesNode {
 		peers:        peers,
 		store:        make(map[string]string),
 		kstate:       make(map[string]KeyState),
+		kseq:         make(map[string]uint64),
 		pendingWrite: make(map[string]*writeRecord),
 		debug:        debug,
 	}
