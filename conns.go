@@ -162,8 +162,15 @@ func (h *HermesNode) handleACK(msg *Message, from *net.UDPAddr) {
 	h.mu.Unlock()
 	h.readCond.Broadcast()
 
+	// Only delete the pending record if it still belongs to this write.
+	// A newer write may have already replaced it in the race window between
+	// releasing writeMu (done=true) and here; deleting that record would
+	// cause the newer write to never receive its ACKs and stall replicas in
+	// StateInvalid permanently.
 	h.writeMu.Lock()
-	delete(h.pendingWrite, msg.Key)
+	if cur := h.pendingWrite[msg.Key]; cur != nil && cur.seq == rec.seq {
+		delete(h.pendingWrite, msg.Key)
+	}
 	h.writeMu.Unlock()
 
 	clientAddr, _ := net.ResolveUDPAddr("udp", rec.clientAddr)
