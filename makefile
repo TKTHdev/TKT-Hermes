@@ -22,6 +22,7 @@ WORKLOAD ?= ycsb-a
 WORKERS  ?= 1
 TYPE ?= ycsb-a
 KEYS ?= 6
+NODE_COUNTS ?= all
 TIMESTAMP := $(shell date +%Y%m%d_%H%M%S)
 
 # Experiment parameters
@@ -46,6 +47,7 @@ help:
 	@echo "  TYPE=ycsb-a                       - Workload type for benchmark (ycsb-a, ycsb-b, ycsb-c)"
 	@echo "  WORKERS='1 2 4'                   - Space-separated worker counts"
 	@echo "  KEYS='6 100 1000'                 - Space-separated key counts"
+	@echo "  NODE_COUNTS='all 1 2 4'           - Node counts to sweep (default: all servers in cluster.conf)"
 	@echo "  EXPERIMENT_SAMPLES=3              - Number of samples per condition (experiment only)"
 	@echo "  EXPERIMENT_TYPES='ycsb-a ycsb-b'  - Workload types to sweep (experiment only)"
 
@@ -81,27 +83,49 @@ clean:
 benchmark: build
 	@mkdir -p $(RESULT_DIR) $(LOG_DIR)
 	@CSV="$(RESULT_DIR)/benchmark_$(TIMESTAMP)_$(TYPE).csv"; \
-	echo "Workload,Workers,Keys,Throughput(ops/sec),Latency(ms)" > "$$CSV"; \
+	echo "Workload,Workers,Keys,Nodes,Throughput(ops/sec),Latency(ms)" > "$$CSV"; \
+	SERVER_COUNT=$$(jq '[.[] | select(.role == "server")] | length' $(CONFIG_FILE)); \
+	if [ "$(NODE_COUNTS)" = "all" ]; then NODE_LIST="$$SERVER_COUNT"; else NODE_LIST="$(NODE_COUNTS)"; fi; \
+	for n in $$NODE_LIST; do \
+		CONF="$(RESULT_DIR)/cluster_$$n.conf"; \
+		jq --argjson n $$n \
+			'[.[] | select(.role == "client")] + ([.[] | select(.role == "server")] | sort_by(.id) | .[:$$n])' \
+			$(CONFIG_FILE) > "$$CONF"; \
+		IDS=$$(jq -r '.[] | select(.role == "server") | .id' "$$CONF"); \
 	for w in $(WORKERS); do \
 		for k in $(KEYS); do \
-			echo "=== Workers=$$w Keys=$$k ==="; \
-			$(MAKE) kill 2>/dev/null || true; \
+			echo "=== Nodes=$$n Workers=$$w Keys=$$k ==="; \
+			for id in $$IDS; do \
+				if [ -f $(LOG_DIR)/node_$$id.pid ]; then \
+					pid=$$(cat $(LOG_DIR)/node_$$id.pid); \
+					kill $$pid 2>/dev/null || true; \
+					rm -f $(LOG_DIR)/node_$$id.pid; \
+				fi; \
+			done; \
 			sleep 1; \
-			for id in $(ALL_IDS); do \
-				./$(BINARY_NAME) start --id $$id --conf $(CONFIG_FILE) $(DEBUG_FLAG) \
+			for id in $$IDS; do \
+				./$(BINARY_NAME) start --id $$id --conf "$$CONF" $(DEBUG_FLAG) \
 					> $(LOG_DIR)/node_$$id.log 2>&1 & \
 				echo $$! > $(LOG_DIR)/node_$$id.pid; \
 			done; \
 			sleep 2; \
 			./$(BINARY_NAME) client \
-				--conf $(CONFIG_FILE) --workload $(TYPE) \
+				--conf "$$CONF" --workload $(TYPE) \
 				--workers $$w --keys $$k $(DEBUG_FLAG) \
 				| tee -a $(LOG_DIR)/bench.log \
 				| grep '^RESULT:' \
-				| sed 's/^RESULT://' >> "$$CSV"; \
-			$(MAKE) kill 2>/dev/null || true; \
+				| sed 's/^RESULT://' \
+				| awk -v n=$$n -F, 'BEGIN{OFS=","} {print $$1,$$2,$$3,n,$$4,$$5}' >> "$$CSV"; \
+			for id in $$IDS; do \
+				if [ -f $(LOG_DIR)/node_$$id.pid ]; then \
+					pid=$$(cat $(LOG_DIR)/node_$$id.pid); \
+					kill $$pid 2>/dev/null || true; \
+					rm -f $(LOG_DIR)/node_$$id.pid; \
+				fi; \
+			done; \
 			sleep 1; \
 		done; \
+	done; \
 	done; \
 	echo "Results written to $$CSV"; \
 	cat "$$CSV"
@@ -110,32 +134,54 @@ experiment: build
 	@mkdir -p $(RESULT_DIR) $(LOG_DIR)
 	@CSV="$(RESULT_DIR)/experiment_$(TIMESTAMP).csv"; \
 	PLOT="$(RESULT_DIR)/experiment_$(TIMESTAMP).png"; \
-	echo "Workload,Workers,Keys,Throughput(ops/sec),Latency(ms)" > "$$CSV"; \
+	echo "Workload,Workers,Keys,Nodes,Throughput(ops/sec),Latency(ms)" > "$$CSV"; \
+	SERVER_COUNT=$$(jq '[.[] | select(.role == "server")] | length' $(CONFIG_FILE)); \
+	if [ "$(NODE_COUNTS)" = "all" ]; then NODE_LIST="$$SERVER_COUNT"; else NODE_LIST="$(NODE_COUNTS)"; fi; \
+	for n in $$NODE_LIST; do \
+		CONF="$(RESULT_DIR)/cluster_$$n.conf"; \
+		jq --argjson n $$n \
+			'[.[] | select(.role == "client")] + ([.[] | select(.role == "server")] | sort_by(.id) | .[:$$n])' \
+			$(CONFIG_FILE) > "$$CONF"; \
+		IDS=$$(jq -r '.[] | select(.role == "server") | .id' "$$CONF"); \
 	for type in $(EXPERIMENT_TYPES); do \
 		for w in $(WORKERS); do \
 			for k in $(KEYS); do \
 				for s in $$(seq 1 $(EXPERIMENT_SAMPLES)); do \
-					echo "=== Type=$$type Workers=$$w Keys=$$k Sample=$$s/$(EXPERIMENT_SAMPLES) ==="; \
-					$(MAKE) kill 2>/dev/null || true; \
+					echo "=== Nodes=$$n Type=$$type Workers=$$w Keys=$$k Sample=$$s/$(EXPERIMENT_SAMPLES) ==="; \
+					for id in $$IDS; do \
+						if [ -f $(LOG_DIR)/node_$$id.pid ]; then \
+							pid=$$(cat $(LOG_DIR)/node_$$id.pid); \
+							kill $$pid 2>/dev/null || true; \
+							rm -f $(LOG_DIR)/node_$$id.pid; \
+						fi; \
+					done; \
 					sleep 1; \
-					for id in $(ALL_IDS); do \
-						./$(BINARY_NAME) start --id $$id --conf $(CONFIG_FILE) $(DEBUG_FLAG) \
+					for id in $$IDS; do \
+						./$(BINARY_NAME) start --id $$id --conf "$$CONF" $(DEBUG_FLAG) \
 							> $(LOG_DIR)/node_$$id.log 2>&1 & \
 						echo $$! > $(LOG_DIR)/node_$$id.pid; \
 					done; \
 					sleep 2; \
 					./$(BINARY_NAME) client \
-						--conf $(CONFIG_FILE) --workload $$type \
+						--conf "$$CONF" --workload $$type \
 						--workers $$w --keys $$k $(DEBUG_FLAG) \
 						| tee -a $(LOG_DIR)/experiment.log \
 						| grep '^RESULT:' \
-						| sed 's/^RESULT://' >> "$$CSV"; \
-					$(MAKE) kill 2>/dev/null || true; \
+						| sed 's/^RESULT://' \
+						| awk -v n=$$n -F, 'BEGIN{OFS=","} {print $$1,$$2,$$3,n,$$4,$$5}' >> "$$CSV"; \
+					for id in $$IDS; do \
+						if [ -f $(LOG_DIR)/node_$$id.pid ]; then \
+							pid=$$(cat $(LOG_DIR)/node_$$id.pid); \
+							kill $$pid 2>/dev/null || true; \
+							rm -f $(LOG_DIR)/node_$$id.pid; \
+						fi; \
+					done; \
 					sleep 1; \
 				done; \
 			done; \
 		done; \
 	done; \
+	done; \
 	echo ""; \
 	echo "Results written to $$CSV"; \
-	uv run --script scripts/plot_experiment.py "$$CSV" "$$PLOT"
+	uv run --script scripts/plot_experiment_nodes.py "$$CSV" "$$PLOT"
