@@ -50,12 +50,28 @@ makefile         build / start / kill / benchmark ターゲット
 
 - Go 1.22 以上
 - `jq`（benchmark make ターゲットで使用）
+- `uv`（`experiment` ターゲットで `scripts/plot_experiment_nodes.py` を実行してプロット生成）
 
 ### ビルド
 
 ```sh
 make build
 ```
+
+### 利用可能な make ターゲット
+
+```sh
+make help
+```
+
+主なターゲット:
+
+- `make build`: `hermes_server` をビルド
+- `make start [TARGET_ID=<id>|all] [DEBUG=true]`: サーバーノードを起動
+- `make kill [TARGET_ID=<id>|all]`: サーバーノードを停止
+- `make benchmark ...`: 単一ワークロードのスイープを実行して CSV 出力
+- `make experiment ...`: 複数サンプルのスイープを実行し、プロットを生成
+- `make clean`: バイナリ、ログ、結果ファイルを削除
 
 ### ローカル 3ノードクラスターの起動
 
@@ -74,6 +90,12 @@ make kill
 
 ```sh
 ./hermes_server start --id 1 --conf cluster.conf
+```
+
+### ベンチマーククライアントを手動実行する場合
+
+```sh
+./hermes_server client --conf cluster.conf --workload ycsb-a --workers 4 --keys 100
 ```
 
 ### クラスター設定ファイルの形式（`cluster.conf`）
@@ -97,6 +119,9 @@ make benchmark TYPE=ycsb-a WORKERS=1 KEYS=6
 
 # ワーカー数・キー数を複数組み合わせてスイープ
 make benchmark TYPE=ycsb-b WORKERS="1 2 4 8" KEYS="6 100"
+
+# ノード数もスイープ（cluster.conf の先頭 N 台のサーバーを使用）
+make benchmark TYPE=ycsb-c WORKERS="1 2 4" KEYS="100" NODE_COUNTS="1 2 3"
 ```
 
 結果は CSV として `results/benchmark_<タイムスタンプ>_<タイプ>.csv` に保存されます。
@@ -107,12 +132,37 @@ make benchmark TYPE=ycsb-b WORKERS="1 2 4 8" KEYS="6 100"
 | ycsb-b     | 5%         |
 | ycsb-c     | 0%（read のみ） |
 
+補足:
+
+- ベンチマーク時間は 1 実行あたり 10 秒で固定です（`client.go`）。
+- 1 行ごとの出力列は `Workload,Workers,Keys,Nodes,Throughput(ops/sec),Latency(ms)` です。
+- ノード数スイープ時に生成されるサブクラスター設定は `results/cluster_<n>.conf` に保存されます。
+
+## 実験スイープとプロット生成
+
+```sh
+# デフォルト: 全ワークロードを各3サンプルで実行
+make experiment WORKERS="1 2 4 8" KEYS="6 100" NODE_COUNTS="1 2 3"
+
+# ワークロード種別とサンプル数を指定
+make experiment EXPERIMENT_TYPES="ycsb-a ycsb-b" EXPERIMENT_SAMPLES=5 WORKERS="1 4" KEYS="100"
+```
+
+出力:
+
+- `results/experiment_<timestamp>.csv`
+- `results/experiment_<timestamp>.png`
+
 ## 実験環境
 
 - 現在のベンチマーク結果・プロットは単一マシン上で取得しています。
 - **分散環境（複数ホスト間のネットワーク）ではありません。**
 
 ## 実験プロット
+
+リポジトリにはサンプルプロットとして次が含まれています:
+
+`results/image.png`
 
 ![Throughput vs Latency（サンプル平均）](results/image.png)
 

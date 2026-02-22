@@ -50,12 +50,28 @@ makefile         Build, start, kill, benchmark targets
 
 - Go 1.22+
 - `jq` (for the benchmark make target)
+- `uv` (for the `experiment` target plot generation using `scripts/plot_experiment_nodes.py`)
 
 ### Build
 
 ```sh
 make build
 ```
+
+### Available make targets
+
+```sh
+make help
+```
+
+Main targets:
+
+- `make build`: build `hermes_server`
+- `make start [TARGET_ID=<id>|all] [DEBUG=true]`: start server node process(es)
+- `make kill [TARGET_ID=<id>|all]`: stop server node process(es)
+- `make benchmark ...`: run one workload sweep and output CSV
+- `make experiment ...`: run multi-sample sweeps and generate plot
+- `make clean`: remove binary, logs, and results
 
 ### Run a local 3-node cluster
 
@@ -74,6 +90,12 @@ make kill
 
 ```sh
 ./hermes_server start --id 1 --conf cluster.conf
+```
+
+### Run benchmark client manually
+
+```sh
+./hermes_server client --conf cluster.conf --workload ycsb-a --workers 4 --keys 100
 ```
 
 ### Cluster config format (`cluster.conf`)
@@ -97,6 +119,9 @@ make benchmark TYPE=ycsb-a WORKERS=1 KEYS=6
 
 # Sweep over multiple worker counts and key counts
 make benchmark TYPE=ycsb-b WORKERS="1 2 4 8" KEYS="6 100"
+
+# Also sweep node counts (uses first N server nodes from cluster.conf)
+make benchmark TYPE=ycsb-c WORKERS="1 2 4" KEYS="100" NODE_COUNTS="1 2 3"
 ```
 
 Results are written as CSV to `results/benchmark_<timestamp>_<type>.csv`.
@@ -107,12 +132,37 @@ Results are written as CSV to `results/benchmark_<timestamp>_<type>.csv`.
 | ycsb-b   | 5%          |
 | ycsb-c   | 0% (read-only) |
 
+Notes:
+
+- Benchmark duration is fixed at 10 seconds per run (`client.go`).
+- Each benchmark line records `Workload,Workers,Keys,Nodes,Throughput(ops/sec),Latency(ms)`.
+- For node-count sweeps, generated sub-cluster configs are saved under `results/cluster_<n>.conf`.
+
+## Experiment sweep and plotting
+
+```sh
+# Default: all workload types, 3 samples each
+make experiment WORKERS="1 2 4 8" KEYS="6 100" NODE_COUNTS="1 2 3"
+
+# Customize workloads and samples
+make experiment EXPERIMENT_TYPES="ycsb-a ycsb-b" EXPERIMENT_SAMPLES=5 WORKERS="1 4" KEYS="100"
+```
+
+Outputs:
+
+- `results/experiment_<timestamp>.csv`
+- `results/experiment_<timestamp>.png`
+
 ## Experiment environment
 
 - The current benchmark results and plots were collected on a single machine.
 - This is **not** a distributed deployment (no multi-host network environment).
 
 ## Experiment plot
+
+The repository includes one sample plot at:
+
+`results/image.png`
 
 ![Throughput vs Latency (averaged over samples)](results/image.png)
 
