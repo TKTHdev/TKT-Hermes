@@ -1,5 +1,7 @@
 # Hermes
 
+[English version here](README.md)
+
 **Hermes** 無効化ベース分散キーバリューストアプロトコルの Go 実装です。
 
 Hermes はキーごとの状態機械（Valid / Invalid / Trans）を全レプリカで管理することで、**1ラウンドトリップの write** と**ローカル read** を実現します。read は常にローカルで処理し、write はまずリモートのコピーを無効化してから、検証ブロードキャストでコミットします。

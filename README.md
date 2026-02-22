@@ -1,5 +1,7 @@
 # Hermes
 
+[日本語版はこちら](README.ja.md)
+
 A Go implementation of the **Hermes** invalidation-based distributed key-value store protocol.
 
 Hermes achieves one-round-trip writes with local reads by maintaining a per-key state machine (Valid / Invalid / Trans) across all replicas. Reads are always served locally; writes invalidate remote copies first, then commit with a validation broadcast.
