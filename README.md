@@ -135,4 +135,4 @@ The `safety_test.go` file verifies the core safety invariants:
 
 ## References
 
-- Kalia et al., *[Hermes: A Fast, Fault-Tolerant and Linearizable Replication Protocol](https://dl.acm.org/doi/10.1145/3373376.3378496)*, ASPLOS 2020
+- Katsarakis et al., *[Hermes: A Fast, Fault-Tolerant and Linearizable Replication Protocol](https://dl.acm.org/doi/10.1145/3373376.3378496)*, ASPLOS 2020
